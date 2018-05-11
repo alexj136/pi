@@ -21,12 +21,12 @@ fromInterpreterState (InterpreterState run wait news n names) =
 
 data WaitQ
     = Senders [(Name, PiTerm)]
-    | Receivers [(Name, PiTerm)]
+    | Receivers [(Bool, Name, PiTerm)]
     deriving (Show, Eq, Ord)
 
 toPiTerms :: (Name, WaitQ) -> [PiTerm]
 toPiTerms (n, (Senders   ss)) = map (\(x, p) -> Out n x p) ss
-toPiTerms (n, (Receivers rs)) = map (\(x, p) -> In  n x p) rs
+toPiTerms (n, (Receivers rs)) = map (\(r, x, p) -> In r n x p) rs
 
 data InterpreterState =
     InterpreterState [PiTerm] (M.Map Name WaitQ) [Name] Name (M.Map Name String)
@@ -63,33 +63,32 @@ exec :: Interpreter ()
 exec = getRun >>= \run -> case run of
     [] -> return ()
     Out x y p : ps -> putRun ps >> dispatchOut x y p >> exec
-    In x y p : ps -> putRun ps >> dispatchIn x y p >> exec
+    In r x y p : ps -> putRun ps >> dispatchIn r x y p >> exec
     New x p : ps -> putRun ps >> dispatchNew x p >> exec
-    Rep p : ps -> undefined
     Par p q : ps -> putRun ([p] ++ ps ++ [q]) >> exec
     O : ps -> putRun ps >> exec
 
 dispatchOut :: Name -> Name -> PiTerm -> Interpreter ()
 dispatchOut x y p = getWait x >>= \wq -> case wq of
-    Just (Receivers ((z, q):rs)) -> do
+    Just (Receivers ((r, z, q):rs)) -> do
         run <- getRun
         q' <- freshOp $ (y // z) q
         putRun $ [p] ++ run ++ [q']
-        putWait x (Receivers rs)
+        putWait x (Receivers (rs ++ if r then [(r, z, q)] else []))
     Just (Receivers []) -> putWait x (Senders [(y, p)])
     Just (Senders ss) -> putWait x (Senders (ss ++ [(y, p)]))
     Nothing -> putWait x (Senders [(y, p)])
 
-dispatchIn :: Name -> Name -> PiTerm -> Interpreter ()
-dispatchIn x y p = getWait x >>= \wq -> case wq of
+dispatchIn :: Bool -> Name -> Name -> PiTerm -> Interpreter ()
+dispatchIn r x y p = getWait x >>= \wq -> case wq of
     Just (Senders ((z, q):ss)) -> do
         run <- getRun
         p' <- freshOp $ (z // y) p
-        putRun $ [p'] ++ run ++ [q]
+        putRun $ [In r x y p] ++ run ++ [p', q]
         putWait x (Senders ss)
-    Just (Senders []) -> putWait x (Receivers [(y, p)])
-    Just (Receivers rs) -> putWait x (Receivers (rs ++ [(y, p)]))
-    Nothing -> putWait x (Receivers [(y, p)])
+    Just (Senders []) -> putWait x (Receivers [(r, y, p)])
+    Just (Receivers rs) -> putWait x (Receivers (rs ++ [(r, y, p)]))
+    Nothing -> putWait x (Receivers [(r, y, p)])
 
 dispatchNew :: Name -> PiTerm -> Interpreter ()
 dispatchNew n p = do
